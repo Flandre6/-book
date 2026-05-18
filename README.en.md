@@ -27,9 +27,7 @@ Open-source AI Agent that autonomously writes, audits, and revises novels — wi
 
 **v1.4.0 short-fiction and Studio Chat workflow update** — Studio Chat and CLI can now create standalone short-fiction packages with synopsis, selling points, cover prompts, and optional cover images; project chat sessions persist across reloads and generated artifacts can be previewed and edited.
 
-**InkOS Short** — Studio chat and CLI can now create a standalone short-fiction package: complete draft, outline and review records, synopsis, selling points, cover prompt, and an optional generated cover image when a cover provider is configured.
-
-**Aggregator API options** — Studio model settings include [kkaiapi](https://en.kkaiapi.com/) ([API docs](https://en.kkaiapi.com/docs) / [models and pricing](https://en.kkaiapi.com/models)) and OpenRouter for aggregator-model access.
+**InkOS Short** — Studio chat and CLI can now create a standalone short-fiction package: complete draft, outline and review records, synopsis, selling points, cover prompt, and an optional generated cover image when a cover provider is configured; Studio model settings include kkaiapi and OpenRouter for aggregator-model access.
 
 **Native English novel writing now supported！** — 10 built-in English genre profiles with dedicated pacing rules, fatigue word lists, and audit dimensions. Set `--lang en` and go.
 
