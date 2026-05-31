@@ -291,7 +291,35 @@ export function validatePostWrite(
     }
   }
 
+  // 12. Narrative-person adherence (#290). A first-person book must read as first
+  // person. The clearest deterministic signal of third-person drift is a chapter
+  // that barely uses 我 yet repeatedly narrates the protagonist by name. Thresholds
+  // are conservative so genuine first-person prose (many 我) never trips.
+  const personViolation = detectNarrativePersonDrift(content, bookRules);
+  if (personViolation) violations.push(personViolation);
+
   return violations;
+}
+
+function detectNarrativePersonDrift(
+  content: string,
+  bookRules: BookRules | null,
+): PostWriteViolation | null {
+  if (bookRules?.narrativePerson !== "first") return null;
+  const name = bookRules.protagonist?.name?.trim();
+  if (!name) return null;
+  const woCount = content.split("我").length - 1;
+  const nameCount = content.split(name).length - 1;
+  // Long chapter, almost no 我, protagonist repeatedly named → third-person prose.
+  if (content.length >= 800 && woCount < 12 && nameCount >= 6 && nameCount > woCount) {
+    return {
+      rule: "叙事人称",
+      severity: "error",
+      description: `本书设定为第一人称，但本章几乎不用「我」（${woCount} 次）却反复以「${name}」第三人称叙述（${nameCount} 次）`,
+      suggestion: "改用第一人称（主角内心视角）重写本章叙事",
+    };
+  }
+  return null;
 }
 
 /**

@@ -9,6 +9,7 @@ import {
   type PostWriteViolation,
 } from "../agents/post-write-validator.js";
 import type { GenreProfile } from "../models/genre-profile.js";
+import { BookRulesSchema } from "../models/book-rules.js";
 
 const baseProfile: GenreProfile = {
   id: "test",
@@ -46,6 +47,38 @@ describe("validatePostWrite", () => {
     const content = "他走过去，端起杯子，灌了一口。外面的雨越下越大。\n\n她站在窗前，看着街上的行人匆匆走过。";
     const result = validatePostWrite(content, baseProfile, null);
     expect(result).toHaveLength(0);
+  });
+
+  it("flags third-person prose in a first-person book (#290 adherence)", () => {
+    const firstPersonRules = BookRulesSchema.parse({
+      narrativePerson: "first",
+      protagonist: { name: "陈烬" },
+    });
+    const para = "陈烬走进昏暗的档案室，他扫了一眼四周的铁架。陈烬蹲下身，从最底层的抽屉里翻出一沓泛黄的文件，他的指尖发抖。陈烬把文件摊在地上，逐页翻看。";
+    const thirdPersonProse = Array(16).fill(para).join("");
+    const result = validatePostWrite(thirdPersonProse, baseProfile, firstPersonRules);
+    const violation = findRule(result, "叙事人称");
+    expect(violation).toBeDefined();
+    expect(violation!.severity).toBe("error");
+  });
+
+  it("does not flag genuine first-person prose", () => {
+    const firstPersonRules = BookRulesSchema.parse({
+      narrativePerson: "first",
+      protagonist: { name: "陈烬" },
+    });
+    const para = "我走进昏暗的档案室，扫了一眼四周的铁架。我蹲下身，从最底层的抽屉里翻出一沓泛黄的文件，指尖发抖。我把文件摊在地上，逐页翻看，我知道麻烦大了。";
+    const firstPersonProse = Array(16).fill(para).join("");
+    const result = validatePostWrite(firstPersonProse, baseProfile, firstPersonRules);
+    expect(findRule(result, "叙事人称")).toBeUndefined();
+  });
+
+  it("does not check narrative person when the user never set one", () => {
+    const noPersonRules = BookRulesSchema.parse({ protagonist: { name: "陈烬" } });
+    const para = "陈烬走进昏暗的档案室，他扫了一眼四周的铁架。陈烬蹲下身，翻出一沓文件，他的指尖发抖。";
+    const thirdPersonProse = Array(8).fill(para).join("");
+    const result = validatePostWrite(thirdPersonProse, baseProfile, noPersonRules);
+    expect(findRule(result, "叙事人称")).toBeUndefined();
   });
 
   it("detects '不是…而是…' pattern", () => {
