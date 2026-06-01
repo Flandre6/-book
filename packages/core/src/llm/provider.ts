@@ -1186,6 +1186,9 @@ export async function chatCompletion(
     readonly webSearch?: boolean;
     readonly onStreamProgress?: OnStreamProgress;
     readonly onTextDelta?: (text: string) => void;
+    // Diagnostics / connectivity checks want a fast pass-or-fail — set false to
+    // skip the transient 502/503/429 retry+backoff (e.g. the doctor probe).
+    readonly retry?: boolean;
   },
 ): Promise<LLMResponse> {
   // C1 (v2.0.0)：删除 maxTokensCap 机制。per-call 显式传的 maxTokens 永远不被裁剪。
@@ -1216,8 +1219,9 @@ export async function chatCompletion(
         }
         return chatCompletionViaPiAi(client, model, messages, resolved, onStreamProgress, onTextDelta);
       },
-      // Retrying after UI text deltas have been emitted can duplicate visible text.
-      { enabled: !onTextDelta },
+      // Retrying after UI text deltas have been emitted can duplicate visible
+      // text; callers can also opt out (e.g. fast-fail diagnostics).
+      { enabled: (options?.retry ?? true) && !onTextDelta },
     );
   } catch (error) {
     // Stream interrupted but partial content is usable — return truncated response
