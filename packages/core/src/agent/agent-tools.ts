@@ -742,7 +742,26 @@ export function createPlayStepTool(
         runId: target.runId,
         ctx,
       });
-      const step = await runner.step(input);
+      let step: Awaited<ReturnType<typeof runner.step>>;
+      try {
+        step = await runner.step(input);
+      } catch (err) {
+        // Never hand a raw tool error to the outer agent — it improvises a fake
+        // "service unavailable / reload your save" message. Return a fixed, graceful
+        // structured failure so the turn fails honestly and recoverably instead.
+        const isZh = (target.world?.language ?? "zh") !== "en";
+        return textResult(
+          isZh
+            ? "（系统刚才卡了一下，这一步没能展开。把你刚才想做的再说一遍，我就接着推进。）"
+            : "(The system hiccuped and this step didn't resolve. Say what you just did again and I'll continue.)",
+          {
+            kind: "play_step_failed",
+            worldId: target.worldId,
+            runId: target.runId,
+            error: err instanceof Error ? err.message : String(err),
+          },
+        );
+      }
 
       const db = createPlayDB(store.runDir(target.worldId, target.runId));
       let graph;

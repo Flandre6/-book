@@ -41,6 +41,37 @@ const PlaySceneRenderSchema = z.object({
 });
 export type PlaySceneRender = z.infer<typeof PlaySceneRenderSchema>;
 
+// A play turn runs three internal LLM calls (interpret → mutate → render). The
+// transport-level retry in the provider does NOT cover HTTP 502/503/429 or
+// "temporarily unavailable", so a single flaky upstream response would break the
+// whole turn. Retry those here, then let each agent fail open.
+function isRetryableLlmError(err: unknown): boolean {
+  const msg = (err instanceof Error ? err.message : String(err)).toLowerCase();
+  return /50[0-9]|429|temporarily unavailable|timeout|timed out|socket|terminated|econn|network|fetch failed|bad gateway|service unavailable|rate limit/.test(msg);
+}
+
+async function chatWithRetry<T>(call: () => Promise<T>, retries = 2): Promise<T> {
+  let lastErr: unknown;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      return await call();
+    } catch (err) {
+      lastErr = err;
+      if (attempt >= retries || !isRetryableLlmError(err)) throw err;
+      await new Promise((resolve) => setTimeout(resolve, 400 * (attempt + 1)));
+    }
+  }
+  throw lastErr;
+}
+
+function trySceneParse(content: string): PlaySceneRender | null {
+  try {
+    return PlaySceneRenderSchema.parse(parseJson(content));
+  } catch {
+    return null;
+  }
+}
+
 export class PlayActionInterpreterAgent extends BaseAgent {
   constructor(ctx: AgentContext) {
     super(ctx);
@@ -51,14 +82,16 @@ export class PlayActionInterpreterAgent extends BaseAgent {
   }
 
   async interpret(input: PlayActionInterpreterInput): Promise<PlayActionIntent> {
-    const response = await this.chat([
-      { role: "system", content: buildActionInterpreterSystemPrompt(input.language ?? "zh") },
-      { role: "user", content: buildActionInterpreterUserPrompt(input, input.language ?? "zh") },
-    ], { temperature: 0.15, maxTokens: 1024 });
-    // Never throw on the model's output: degrade a fully-unparseable response to a generic action
-    // (the player's raw text as a "do") rather than crashing the turn.
+    // Never throw: a transient upstream error (after retries) or unparseable output
+    // degrades to a generic action (the player's raw text as a "do"), not a crash.
     let raw: unknown = {};
-    try { raw = parseJson(response.content); } catch { /* malformed JSON → degrade below */ }
+    try {
+      const response = await chatWithRetry(() => this.chat([
+        { role: "system", content: buildActionInterpreterSystemPrompt(input.language ?? "zh") },
+        { role: "user", content: buildActionInterpreterUserPrompt(input, input.language ?? "zh") },
+      ], { temperature: 0.15, maxTokens: 1024 }));
+      raw = parseJson(response.content);
+    } catch { /* transient/malformed → degrade below */ }
     const parsed = PlayActionIntentSchema.safeParse(raw);
     return parsed.success
       ? parsed.data
@@ -76,14 +109,16 @@ export class PlayWorldMutatorAgent extends BaseAgent {
   }
 
   async proposeMutation(input: PlayWorldMutatorInput): Promise<PlayMutation> {
-    const response = await this.chat([
-      { role: "system", content: buildWorldMutatorSystemPrompt(input.language ?? "zh") },
-      { role: "user", content: buildWorldMutatorUserPrompt(input, input.language ?? "zh") },
-    ], { temperature: 0.25, maxTokens: 4096 });
-    // Never throw on the model's output: an unparseable mutation degrades to a blocked, no-op turn
-    // (with a reason) instead of crashing play_step. eventId is always backfilled.
+    // Never throw: a transient upstream error (after retries) or an unparseable
+    // mutation degrades to a blocked, no-op turn (with a reason), not a crash.
     let raw: unknown = {};
-    try { raw = parseJson(response.content); } catch { /* malformed JSON → degrade below */ }
+    try {
+      const response = await chatWithRetry(() => this.chat([
+        { role: "system", content: buildWorldMutatorSystemPrompt(input.language ?? "zh") },
+        { role: "user", content: buildWorldMutatorUserPrompt(input, input.language ?? "zh") },
+      ], { temperature: 0.25, maxTokens: 4096 }));
+      raw = parseJson(response.content);
+    } catch { /* transient/malformed → degrade below */ }
     const parsed = PlayMutationSchema.safeParse(raw);
     const mutation = parsed.success
       ? parsed.data
@@ -136,11 +171,47 @@ export class PlaySceneRendererAgent extends BaseAgent {
   }
 
   async render(input: PlaySceneRenderInput & { readonly mode?: "open" | "guided" }): Promise<PlaySceneRender> {
-    const response = await this.chat([
-      { role: "system", content: buildSceneRendererSystemPrompt(input.mode ?? "open", input.language ?? "zh") },
-      { role: "user", content: buildSceneRendererUserPrompt(input, input.language ?? "zh") },
-    ], { temperature: 0.45, maxTokens: 2048 });
-    return PlaySceneRenderSchema.parse(parseJson(response.content));
+    const language = input.language ?? "zh";
+    const messages: { role: "system" | "user" | "assistant"; content: string }[] = [
+      { role: "system", content: buildSceneRendererSystemPrompt(input.mode ?? "open", language) },
+      { role: "user", content: buildSceneRendererUserPrompt(input, language) },
+    ];
+    // The renderer must NEVER throw — a hiccup here used to break the turn AND leave
+    // a half-committed world (event/state written before render). Retry transient
+    // upstream errors, ask once for strict JSON if the output wasn't, then fail open
+    // to the raw prose as the scene. (Bigger token budget so long literary scenes
+    // don't get truncated mid-JSON, which is itself a common parse failure.)
+    let lastContent = "";
+    for (let attempt = 0; attempt < 3; attempt++) {
+      let content = "";
+      try {
+        const response = await chatWithRetry(() => this.chat(messages, { temperature: 0.45, maxTokens: 4096 }));
+        content = response.content;
+      } catch {
+        break; // transient retries exhausted → fail open below
+      }
+      lastContent = content || lastContent;
+      const parsed = trySceneParse(content);
+      if (parsed) return parsed;
+      messages.push(
+        { role: "assistant", content },
+        {
+          role: "user",
+          content: language === "en"
+            ? 'That was not strict JSON. Output ONLY one JSON object {"sceneText": "...", "suggestedActions": ["..."]} and nothing else.'
+            : '上面不是严格 JSON。只输出一个 JSON 对象 {"sceneText": "...", "suggestedActions": ["..."]}，不要任何其他文字。',
+        },
+      );
+    }
+    const proseFallback = lastContent
+      .trim()
+      .replace(/^```(?:json)?\s*/i, "")
+      .replace(/```\s*$/i, "")
+      .trim();
+    return {
+      sceneText: proseFallback || (language === "en" ? "(The moment holds, unresolved.)" : "（这一拍悬着，没有落定。）"),
+      suggestedActions: [],
+    };
   }
 }
 

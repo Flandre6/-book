@@ -72,6 +72,38 @@ describe("play agents", () => {
       suggestedActions: ["继续翻看医院记录", "套徐晋安的话"],
     });
   });
+
+  it("renderer fails open: non-JSON output becomes the scene instead of throwing", async () => {
+    const agent = new PlaySceneRendererAgent(ctx);
+    // Model returned prose, not JSON — must degrade to using it as the scene, not crash the turn.
+    vi.spyOn(agent as unknown as { chat: PlaySceneRendererAgent["chat"] }, "chat").mockResolvedValue({
+      content: "雨还在下，她没有抬头，只是把书往自己那边挪了挪。",
+    } as never);
+    const result = await agent.render({
+      input: "我看着她",
+      action: { actionKind: "look", intent: "看她" },
+      mutationSummary: "",
+      stateBrief: "",
+    });
+    expect(result.sceneText).toContain("雨还在下");
+    expect(result.suggestedActions).toEqual([]);
+  });
+
+  it("renderer fails open on a transient upstream error instead of crashing the turn", async () => {
+    const agent = new PlaySceneRendererAgent(ctx);
+    vi.spyOn(agent as unknown as { chat: PlaySceneRendererAgent["chat"] }, "chat").mockRejectedValue(
+      new Error("502 Bad Gateway"),
+    );
+    const result = await agent.render({
+      input: "我推门进去",
+      action: { actionKind: "move", intent: "进门" },
+      mutationSummary: "",
+      stateBrief: "",
+    });
+    // Degraded to a placeholder scene — a thrown error here would break (and half-commit) the turn.
+    expect(result.sceneText.length).toBeGreaterThan(0);
+    expect(result.suggestedActions).toEqual([]);
+  });
 });
 
 describe("scene renderer prompt by mode", () => {

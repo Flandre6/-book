@@ -113,23 +113,12 @@ export class PlayRunner {
       context,
       language,
     }));
-    const applied = applyPlayMutation({
-      db: this.db,
-      mutation,
-      rawInput,
-    });
-
-    await this.store.appendEvent(this.options.worldId, this.options.runId, applied.event);
     const stateBrief = renderStateBrief({ action, mutation });
-    await this.store.writeProjection(this.options.worldId, this.options.runId, "projections/state.md", stateBrief);
-    await this.store.saveCurrentState(this.options.worldId, this.options.runId, {
-      turn,
-      lastEventId: applied.event.id,
-      lastAction: action,
-      lastSummary: mutation.summary,
-      blocked: mutation.blocked,
-    });
 
+    // Render BEFORE any commit. The renderer is fail-open (never throws), but the
+    // ordering still matters: nothing about this turn (db mutation, event, state,
+    // scene, transcript) is persisted until the scene is in hand — so a turn is
+    // all-or-nothing and can never leave a "state advanced but tool failed" half-state.
     const render = await this.sceneRenderer.render({
       input: rawInput,
       action,
@@ -138,6 +127,22 @@ export class PlayRunner {
       mode: world?.mode ?? "open",
       language,
       worldPremise: world?.premise,
+    });
+
+    // Commit everything together, only after the scene succeeded.
+    const applied = applyPlayMutation({
+      db: this.db,
+      mutation,
+      rawInput,
+    });
+    await this.store.appendEvent(this.options.worldId, this.options.runId, applied.event);
+    await this.store.writeProjection(this.options.worldId, this.options.runId, "projections/state.md", stateBrief);
+    await this.store.saveCurrentState(this.options.worldId, this.options.runId, {
+      turn,
+      lastEventId: applied.event.id,
+      lastAction: action,
+      lastSummary: mutation.summary,
+      blocked: mutation.blocked,
     });
     await this.store.writeProjection(this.options.worldId, this.options.runId, "projections/scene.md", `${render.sceneText}\n`);
     await this.store.appendTranscriptTurn(this.options.worldId, this.options.runId, {
