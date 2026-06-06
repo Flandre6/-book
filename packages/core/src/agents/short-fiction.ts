@@ -283,7 +283,7 @@ export function parseShortFictionBatchDraft(
       number,
     );
     const content = sanitizeChapterContent(
-      extractTaggedBlock(rawContent, `CHAPTER ${number} CONTENT`)
+      extractLastNonEmptyTaggedBlock(rawContent, `CHAPTER ${number} CONTENT`)
       || extractDuplicateTitleTaggedChapterContent(rawContent, number)
       || extractMarkdownChapterContent(rawContent, number)
       || "",
@@ -364,12 +364,30 @@ export function parseShortFictionSalesPackage(rawContent: string, fallbackTitle 
 }
 
 function extractTaggedBlock(raw: string, tag: string): string {
+  return extractTaggedBlocks(raw, tag)[0] ?? "";
+}
+
+function extractLastNonEmptyTaggedBlock(raw: string, tag: string): string {
+  return extractTaggedBlocks(raw, tag)
+    .map((block) => block.trim())
+    .filter(Boolean)
+    .at(-1) ?? "";
+}
+
+function extractTaggedBlocks(raw: string, tag: string): string[] {
   const escaped = tag.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const pattern = new RegExp(
-    `^\\s*===\\s*${escaped}\\s*===\\s*\\n([\\s\\S]*?)(?=^\\s*===\\s*[A-Z0-9_ ]+\\s*===\\s*$|(?![\\s\\S]))`,
-    "im",
-  );
-  return pattern.exec(raw)?.[1]?.trim() ?? "";
+  const tagPattern = new RegExp(`^\\s*===\\s*${escaped}\\s*===\\s*$`, "gim");
+  const nextTagPattern = /^\s*===\s*[A-Z0-9_ ]+\s*===\s*$/gim;
+  const blocks: string[] = [];
+  for (const match of raw.matchAll(tagPattern)) {
+    if (match.index === undefined) continue;
+    const start = match.index + match[0].length;
+    const rest = raw.slice(start).replace(/^\s*\n/, "");
+    nextTagPattern.lastIndex = 0;
+    const next = nextTagPattern.exec(rest);
+    blocks.push((next ? rest.slice(0, next.index) : rest).trim());
+  }
+  return blocks;
 }
 
 function extractFirstHeading(raw: string): string {

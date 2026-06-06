@@ -27,6 +27,8 @@ import { coverSecretKey, resolveCoverProviderPreset, type CoverProviderPreset } 
 import { loadSecrets } from "../llm/secrets.js";
 import { safeChildPath } from "../utils/path-safety.js";
 
+const SHORT_FICTION_DRAFT_COMPLETION_ATTEMPTS = 3;
+
 export interface ShortFictionRunRuntimes {
   readonly planner: AgentContext;
   readonly outlineReview: AgentContext;
@@ -204,17 +206,23 @@ async function produceShort(
       chapterCount,
       charsPerChapter,
     });
-    const missingFromInitialDraft = findEmptyShortFictionChapters(draftV1);
-    if (missingFromInitialDraft.length > 0) {
+    let missingFromDraft = findEmptyShortFictionChapters(draftV1);
+    if (missingFromDraft.length > 0) {
       await writeDraftArtifacts(root, baseDir, "v001-partial", draftV1);
-      options.onProgress?.(`Completing missing short fiction chapters: ${missingFromInitialDraft.join(", ")}...`);
-      draftV1 = await writer.continueDraft({
-        direction: options.direction,
-        outlineMarkdown,
-        chapterCount,
-        charsPerChapter,
-        draft: draftV1,
-      });
+      for (let attempt = 1; missingFromDraft.length > 0 && attempt <= SHORT_FICTION_DRAFT_COMPLETION_ATTEMPTS; attempt += 1) {
+        options.onProgress?.(`Completing missing short fiction chapters: ${missingFromDraft.join(", ")}...`);
+        draftV1 = await writer.continueDraft({
+          direction: options.direction,
+          outlineMarkdown,
+          chapterCount,
+          charsPerChapter,
+          draft: draftV1,
+        });
+        missingFromDraft = findEmptyShortFictionChapters(draftV1);
+        if (missingFromDraft.length > 0) {
+          await writeDraftArtifacts(root, baseDir, "v001-partial", draftV1);
+        }
+      }
     }
     validateShortFictionDraftForFinal(draftV1, { expectedChapters: chapterCount });
     await writeDraftArtifacts(root, baseDir, "v001", draftV1);

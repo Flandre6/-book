@@ -31,6 +31,20 @@ ${Array.from({ length: 5 }, (_, i) => `=== CHAPTER ${i + 1} TITLE ===
 === CHAPTER ${i + 1} CONTENT ===
 ${"深夜的电梯停在不存在的十三层，门开了。".repeat(20)}`).join("\n")}
 `;
+const MIDDLE_GAP_DRAFT_MD = `
+=== SHORT_FICTION_TITLE ===
+电梯多一层
+${Array.from({ length: CH }, (_, i) => `=== CHAPTER ${i + 1} TITLE ===
+第${i + 1}章
+=== CHAPTER ${i + 1} CONTENT ===
+${i === 4 || i === 7 ? "" : "深夜的电梯停在不存在的十三层，门开了。".repeat(20)}`).join("\n")}
+`;
+const CHAPTER_5_ONLY_CONTINUATION_MD = `
+=== CHAPTER 5 TITLE ===
+第5章
+=== CHAPTER 5 CONTENT ===
+${"第五章补写完成，电梯井里传来旧广播声。".repeat(20)}
+`;
 
 function ctx(projectRoot: string) {
   return { client: { provider: "openai" } as never, model: "fake", projectRoot };
@@ -54,6 +68,14 @@ describe("short fiction resume + failure marker (C2)", () => {
       title: "电梯多一层", intro: "钩子", sellingPoints: ["反转"], coverPrompt: "", rawContent: "",
     });
   }
+
+  it("uses a later non-empty duplicate chapter content block when filling a previously empty chapter", () => {
+    const merged = `${MIDDLE_GAP_DRAFT_MD}\n\n${CHAPTER_5_ONLY_CONTINUATION_MD}`;
+    const draft = parseShortFictionBatchDraft(merged, { expectedChapters: CH });
+
+    expect(draft.chapters[4]?.content).toContain("第五章补写完成");
+    expect(findEmptyChapterNumbers(draft)).toEqual([8]);
+  });
 
   it("resumes from an existing outline/v002.md, skipping the three outline stages", async () => {
     await mkdir(join(root, "shorts", "elevator", "outline"), { recursive: true });
@@ -114,6 +136,32 @@ describe("short fiction resume + failure marker (C2)", () => {
     expect(final).toContain("第12章");
   });
 
+  it("keeps completing a draft when the first continuation fills only some missing middle chapters", async () => {
+    await mkdir(join(root, "shorts", "elevator", "outline"), { recursive: true });
+    await writeFile(join(root, "shorts", "elevator", "outline", "v002.md"), "## 既有大纲", "utf-8");
+    const initial = parseShortFictionBatchDraft(MIDDLE_GAP_DRAFT_MD, { expectedChapters: CH });
+    const chapter5Only = parseShortFictionBatchDraft(`${MIDDLE_GAP_DRAFT_MD}\n\n${CHAPTER_5_ONLY_CONTINUATION_MD}`, { expectedChapters: CH });
+    const complete = parseShortFictionBatchDraft(DRAFT_MD, { expectedChapters: CH });
+    const continueDraft = vi.spyOn(ShortFictionWriterAgent.prototype, "continueDraft")
+      .mockResolvedValueOnce(chapter5Only)
+      .mockResolvedValueOnce(complete);
+    vi.spyOn(ShortFictionWriterAgent.prototype, "writeDraft").mockResolvedValue(initial);
+    vi.spyOn(ShortFictionDraftReviewerAgent.prototype, "reviewDraft").mockResolvedValue("looks fine");
+    vi.spyOn(ShortFictionDraftReviserAgent.prototype, "reviseDraft").mockResolvedValue(complete);
+    vi.spyOn(ShortFictionPackagingAgent.prototype, "generatePackage").mockResolvedValue({
+      title: "电梯多一层", intro: "钩子", sellingPoints: ["反转"], coverPrompt: "", rawContent: "",
+    });
+
+    await runShortFictionProduction({
+      projectRoot: root, direction: "恐怖短篇", storyId: "elevator",
+      chapterCount: CH, charsPerChapter: 1000, cover: false, runtimes: runtimes(root),
+    });
+
+    expect(continueDraft).toHaveBeenCalledTimes(2);
+    const finalJson = JSON.parse(await readFile(join(root, "shorts", "elevator", "final", "short-story.json"), "utf-8"));
+    expect(finalJson.chapters.every((chapter: { content: string }) => chapter.content.length > 0)).toBe(true);
+  });
+
   it("keeps the complete first draft when the single revision output is invalid", async () => {
     await mkdir(join(root, "shorts", "elevator", "outline"), { recursive: true });
     await writeFile(join(root, "shorts", "elevator", "outline", "v002.md"), "## 既有大纲", "utf-8");
@@ -170,3 +218,7 @@ describe("short fiction resume + failure marker (C2)", () => {
     await expect(access(join(root, "shorts", "elevator", "final", "sales-package.md"))).resolves.toBeUndefined();
   });
 });
+
+function findEmptyChapterNumbers(draft: ReturnType<typeof parseShortFictionBatchDraft>): number[] {
+  return draft.chapters.filter((chapter) => !chapter.content.trim()).map((chapter) => chapter.number);
+}
